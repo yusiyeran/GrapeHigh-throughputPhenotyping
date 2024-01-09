@@ -2,15 +2,18 @@ library(rTASSEL)
 library(readxl)
 library(ggplot2)
 library(tidyverse)
+library(MASS)#boxcox变换  正态分布变换
 # library(ggforce)
 wd = "G:\\OneDrive\\C5.23=基因芯片和高通量表型组\\5.GWAS-rTASSEL\\out_V1.0"
 setwd(wd)
 # Create rTASSEL data object
 
-options(java.parameters = c("-Xmx10g", "-Xms2g")) ##rtassel memory set
+options(java.parameters = c("-Xmx15g", "-Xms2g")) ##rtassel memory set
 
 genoPath = "G:\\OneDrive\\C5.23=基因芯片和高通量表型组\\5.GWAS-rTASSEL\\065.missing_maf.vcf"
 phenoPath = "G:\\OneDrive\\C5.23=基因芯片和高通量表型组\\5.GWAS-rTASSEL\\2021Out_V2.0"
+
+geno = readGenotypeTableFromPath(genoPath)
 
 file.names = list.files(phenoPath)
 pdf("zyy_GWAS-rTASSEL_MLM_V1.0.pdf",width = 10,height = 5.5)
@@ -21,19 +24,52 @@ pheno0 = read.csv(paste(phenoPath,"\\",i,sep = ""))
 geno_ID = read_excel("G:\\OneDrive\\C5.23=基因芯片和高通量表型组\\5.GWAS-rTASSEL\\06-5-Berrysize-表型文件-02.xlsx",sheet = "GWAS")
 pheno1 = merge(geno_ID,pheno0[,-1],by.x = "Genotype2",by.y = "Genotype",all.x = T)
 #pheno1 = merge(geno_ID,zyy,by.x = "Genotype2",by.y = "Genotype",all.x = T)
+if (i == "P_data_PCs.csv"){
+  pheno2 = pheno1[,-1]
+}else{
+  pheno2 = pheno1[,c(2:4)]
+}
 
 
-geno = readGenotypeTableFromPath(genoPath)
+for (ii_trait in names(pheno2)[-1]){
+  pheno3 = pheno2[,c("Genotype3",ii_trait)]
+  pheno33= pheno3
 
 # pcaRes = pca(geno,nComponents = 2)
 # pcaRes$PC_Datum
 # pheno2 = merge(pheno1,pcaRes$PC_Datum,by.x = "Genotype3",by.y = "Taxa" )
 # pheno = readPhenotypeFromDataFrame(pheno2[,c(1,3,4,(dim(pheno2)[2]-1),dim(pheno2)[2])],taxaID = "Genotype3",attributeTypes = c('data','data',"covariate","covariate"))
-if (i == "P_data_PCs.csv"){
-  pheno = readPhenotypeFromDataFrame(pheno1,taxaID = "Genotype3")
-}else{
-  pheno = readPhenotypeFromDataFrame(pheno1[,c(2:4)],taxaID = "Genotype3")
-}
+
+ 
+  dis_test = shapiro.test (pheno3[,2])
+  if (dis_test$p.value>0.05){
+    p0 = ggplot(data = pheno33,aes(x=(pheno33[,2])))+geom_histogram(bins = 20,aes(y=..density..))+xlab(ii_trait)+theme_bw(base_size = 18)
+    p01 = ggplot(data = pheno33,aes(sample=(pheno33[,2])))+stat_qq()+stat_qq_line()+theme_bw(base_size = 18)+xlab("theoretical")+ylab ("smple")
+  }else{
+    p0 = ggplot(data = pheno33,aes(x=(pheno33[,2])))+geom_histogram(bins = 20,aes(y=..density..))+xlab(ii_trait)+theme_bw(base_size = 18)
+    p01 = ggplot(data = pheno33,aes(sample=(pheno33[,2])))+stat_qq()+stat_qq_line()+theme_bw(base_size = 18)+xlab("theoretical")+ylab ("smple")
+    
+    min_phe = min(pheno3[,2],na.rm=T)
+    if (min_phe <= 0){
+      pheno3[,2] = pheno3[,2]+min_phe*-1.05
+      pheno3[which(pheno3[,2]==0),2] = NA
+    }
+
+    
+    #find optimal lambda for Box-Cox transformation 
+    bc <- boxcox(pheno3[,2] ~ c(1:length(pheno3[,2])))
+    lambda <- bc$x[which.max(bc$y)]
+    cox_phe = (pheno3[,2]^lambda-1)/lambda
+    pheno3[,2] = cox_phe
+    pheno4 = pheno3
+    p00 = ggplot(data = pheno4,aes(x=(pheno4[,2])))+geom_histogram(bins = 20,aes(y=..density..))+xlab(ii_trait)+theme_bw(base_size = 18)
+    p001 = ggplot(data = pheno4,aes(sample=(pheno4[,2])))+stat_qq()+stat_qq_line()+theme_bw(base_size = 18)+xlab("theoretical")+ylab ("smple")
+    #fit new linear regression model using the Box-Cox transformation
+    # new_model <- lm(((lm_y^lambda-1)/lambda) ~lm_x)
+  }
+  
+  pheno = readPhenotypeFromDataFrame(pheno3,taxaID = "Genotype3")
+
 
 tasGenoPheno <- readGenotypePhenotype(
   genoPathOrObj    = geno,
@@ -42,7 +78,15 @@ tasGenoPheno <- readGenotypePhenotype(
 tasKin <- kinshipMatrix(tasObj = tasGenoPheno)
 tasKinRMat <- as.matrix(tasKin)
 
+
 # Calculate MLM
+tasGenoPheno = filterGenotypeTableSites(tasGenoPheno,
+                                        siteMinCount = round(dim(pheno3)[1]*0.9),
+                                        siteMinAlleleFreq = 0.05,
+                                        # removeMinorSNPStates = T,
+                                        # removeSitesWithIndels = T,
+                                        siteRangeFilterType = c("none", "sites", "position"),)
+
 
 tasMLM <- assocModelFitter(
   tasObj = tasGenoPheno,  # <- our prior TASSEL object
@@ -52,11 +96,79 @@ tasMLM <- assocModelFitter(
   # kinship = NULL,
   maxP = 1,
   fastAssociation = FALSE,
-  biallelicOnly = T,
-  appendAddDom = T
+  # biallelicOnly = T,
+  # appendAddDom = T
 
 )
+plot.data0 = tasMLM@results$MLM_Stats
+# View visualization
+for (j in unique(plot.data0$Trait)) {
+  
+  
+  
+  plot.data =plot.data0[plot.data0$Trait == j,]
+  plot.data$Pos = as.numeric(plot.data$Pos)
+  plot.data$Chr = as.numeric(plot.data$Chr)
+  # str(plot.data)
+  
+  chr.len = plot.data %>% group_by(Chr) %>% summarise(chr.len = max(Pos))
+  chr.len = na.omit(chr.len)
+  chr.len = as.data.frame(chr.len)
+  chr.pos = chr.len %>% mutate(total = cumsum(chr.len)-chr.len) %>% dplyr::select(-chr.len)
+  
+  snp.pos = chr.pos %>% left_join(plot.data,.,by="Chr")%>%arrange(Chr,Pos)%>% mutate(Poscum = Pos + total)
+  
+  X.axis = snp.pos %>% group_by(Chr) %>% summarize(center = (max(Poscum)+min(Poscum))/2)
+  X.axis = na.omit(X.axis)
+  
+  data = snp.pos %>% mutate(is_highlight = ifelse(-log10(p)>4.22,"yes","no"))
+  
+  p = ggplot(snp.pos, aes(x=Poscum,y=-log10(p)))+
+    geom_point(aes(color = as.factor(Chr)),alpha=0.8,size=1.3)+
+    scale_color_manual(values = rep(c("grey","skyblue"),20))+
+    scale_x_continuous(label = X.axis$Chr,breaks = X.axis$center)+
+    geom_point(data = subset(data,is_highlight == "yes"),color="orange",size=2)+
+    geom_hline(yintercept = 4.22,color= "red",linetype = 2,linewidth = 1)+xlab("Chromosome")+
+    # facet_zoom(x=Poscum >= 30000000 & Poscum <= 41000000)+
+    # scale_y_continuous(expand = c(0,0))+
+    theme_bw(base_size = 18)+#ggtitle(j)+
+    theme(
+      legend.position = 'none',
+      panel.border = element_blank(),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank()
+    )
+}
+##########raw#########
+pheno_raw = readPhenotypeFromDataFrame(pheno33,taxaID = "Genotype3")
+tasGenoPheno_raw <- readGenotypePhenotype(
+  genoPathOrObj    = geno,
+  phenoPathDFOrObj = pheno_raw
+)
+tasKin_raw <- kinshipMatrix(tasObj = tasGenoPheno_raw)
+tasKinRMat_raw <- as.matrix(tasKin_raw)
 
+# Calculate MLM
+tasGenoPheno_raw = filterGenotypeTableSites(tasGenoPheno_raw,
+                                        siteMinCount = round(dim(pheno33)[1]*0.9),
+                                        siteMinAlleleFreq = 0.05,
+                                        # removeMinorSNPStates = T,
+                                        # removeSitesWithIndels = T,
+                                        siteRangeFilterType = c("none", "sites", "position"),)
+
+
+tasMLM_raw <- assocModelFitter(
+  tasObj = tasGenoPheno_raw,  # <- our prior TASSEL object
+  formula = . ~ .,    # <- run only meana.mean2
+  fitMarkers = TRUE,      # <- set this to TRUE for GLM
+  kinship = tasKin_raw,       # <- our prior kinship object
+  # kinship = NULL,
+  maxP = 1,
+  fastAssociation = FALSE,
+  # biallelicOnly = T,
+  # appendAddDom = T
+  
+)
 # manhattanEH <- manhattanPlot(
 #   assocStats = tasMLM$GLM_Stats,
 #   trait      = "meana.mean2",
@@ -65,59 +177,75 @@ tasMLM <- assocModelFitter(
 # 
 # manhattanEH
 # plot.data0 = tasMLM$MLM_Stats
-plot.data0 = tasMLM$GLM_Stats
+plot.data0_raw = tasMLM_raw@results$MLM_Stats
 # View visualization
-for (j in unique(tasMLM$GLM_Stats$Trait)) {
+for (j in unique(plot.data0_raw$Trait)) {
   
 
 
-plot.data =plot.data0[plot.data0$Trait == j,]
-plot.data$Pos = as.numeric(plot.data$Pos)
-plot.data$Chr = as.numeric(plot.data$Chr)
-str(plot.data)
+plot.data_raw =plot.data0_raw[plot.data0_raw$Trait == j,]
+plot.data_raw$Pos = as.numeric(plot.data_raw$Pos)
+plot.data_raw$Chr = as.numeric(plot.data_raw$Chr)
+# str(plot.data)
 
-chr.len = plot.data %>% group_by(Chr) %>% summarise(chr.len = max(Pos))
+chr.len = plot.data_raw %>% group_by(Chr) %>% summarise(chr.len = max(Pos))
 chr.len = na.omit(chr.len)
-chr.pos = chr.len %>% mutate(total = cumsum(chr.len)-chr.len) %>% select(-chr.len)
+chr.len = as.data.frame(chr.len)
+chr.pos = chr.len %>% mutate(total = cumsum(chr.len)-chr.len) %>% dplyr::select(-chr.len)
 
-snp.pos = chr.pos %>% left_join(plot.data,.,by="Chr")%>%arrange(Chr,Pos)%>% mutate(Poscum = Pos + total)
+snp.pos = chr.pos %>% left_join(plot.data_raw,.,by="Chr")%>%arrange(Chr,Pos)%>% mutate(Poscum = Pos + total)
 
 X.axis = snp.pos %>% group_by(Chr) %>% summarize(center = (max(Poscum)+min(Poscum))/2)
 X.axis = na.omit(X.axis)
 
-# data = snp.pos %>% mutate(is_highlight = ifelse(-log10(p)>4.22,"yes","no"))
+data_raw = snp.pos %>% mutate(is_highlight = ifelse(-log10(p)>4.22,"yes","no"))
 
-p = ggplot(snp.pos, aes(x=Poscum,y=-log10(p)))+
+pp = ggplot(snp.pos, aes(x=Poscum,y=-log10(p)))+
   geom_point(aes(color = as.factor(Chr)),alpha=0.8,size=1.3)+
   scale_color_manual(values = rep(c("grey","skyblue"),20))+
   scale_x_continuous(label = X.axis$Chr,breaks = X.axis$center)+
-  # geom_point(data = subset(data,is_highlight == "yes"),color="orange",size=2)+
+  geom_point(data = subset(data_raw,is_highlight == "yes"),color="orange",size=2)+
   geom_hline(yintercept = 4.22,color= "red",linetype = 2,linewidth = 1)+xlab("Chromosome")+
   # facet_zoom(x=Poscum >= 30000000 & Poscum <= 41000000)+
   # scale_y_continuous(expand = c(0,0))+
-  theme_bw(base_size = 15)+ggtitle(j)+
+  theme_bw(base_size = 18)+#ggtitle(j)+
   theme(
     legend.position = 'none',
     panel.border = element_blank(),
     panel.grid.major.x = element_blank(),
     panel.grid.minor.x = element_blank()
   )
-# png(paste(wd,"\\GLM_V1.0\\",i,"_",j,".png",sep = ""),width = 10,height = 5.5, units = "in",res = 200)
-png(paste(wd,"\\","_",j,".png",sep = ""),width = 10,height = 5.5, units = "in",res = 200)
-print(p)
-
-dev.off()
-
-
-
-
 }
+if (dis_test$p.value>0.05){
+  p2=cowplot::plot_grid(p0,p01,nrow=1)
+  p3 = cowplot::plot_grid(p2,p,nrow=2)
+  png(paste(wd,"\\MLM_V3.0\\",i,"_",ii_trait,".png",sep = ""),width = 10,height = 10, units = "in",res = 300)
+  # png(paste(wd,"\\","_",j,".png",sep = ""),width = 10,height = 5.5, units = "in",res = 200)
+  print(p3)
+  
+  dev.off()
+}else{
+  p2=cowplot::plot_grid(p0,p01,nrow=1)
+  p22=cowplot::plot_grid(p00,p001,nrow=1)
+  p3 = cowplot::plot_grid(p2,pp,p22,p,nrow=4)
+  png(paste(wd,"\\MLM_V3.0\\",i,"_",ii_trait,".png",sep = ""),width = 10,height = 18, units = "in",res = 300)
+  # png(paste(wd,"\\","_",j,".png",sep = ""),width = 10,height = 5.5, units = "in",res = 200)
+  print(p3)
+  
+  dev.off()
+}
+
+
+
+
+
+
 don = plot.data0
 don = na.omit(don)
 
 don_2 = don[-log10(don$p)>4.22,]
 
-write.csv(don_2,i)
+write.csv(don_2,paste(wd,"\\MLM_V3.0\\",i,"_",ii_trait,".csv",sep = ""))
 
 # for (ii in unique(don_2$Chr)) {
 #   don_ii = don_2[don_2$Chr == ii,]
@@ -136,6 +264,7 @@ write.csv(don_2,i)
 #   
 # }
 
+}
 }
 dev.off()
 
