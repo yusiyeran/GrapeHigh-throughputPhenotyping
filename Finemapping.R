@@ -42,4 +42,33 @@ for (i in 1:dim(max_shapeindex_4)[1]){
   temp1_t_group$pos = shapeindex_4[i,"position"]
   max_data = rbind(max_data,temp1_t_group)
 }
+#####min_data####
+min_shapeindex_4 = shapeindex_4[,min_shapeindex_phe$Genotype]
+min_data = data.frame()
+for (i in 1:dim(min_shapeindex_4)[1]){
+  temp1 = min_shapeindex_4[i,]
+  temp1_t = t(temp1)
+  temp1_t = na.omit(temp1_t)
+  temp1_t = data.frame(Genotype = rownames(temp1_t),group = temp1_t[,1])
+  
+  temp1_t_group = group_by(temp1_t, group) %>% summarize_each(funs(length))
+  temp1_t_group = as.data.frame(temp1_t_group)
+  temp1_t_group$fre = temp1_t_group$Genotype/dim(max_shapeindex_4)[2]
+  temp1_t_group = temp1_t_group[order(temp1_t_group$fre,decreasing = T),]
+  temp1_t_group$chr = shapeindex_4[i,"Chromosome"]
+  temp1_t_group$pos = shapeindex_4[i,"position"]
+  min_data = rbind(min_data,temp1_t_group)
+}
+######
+max_data$group2 = "max"
+min_data$group2 = "min"
+max_min_data = rbind(max_data,min_data)
+ggplot(data = max_min_data,aes(x=pos,y=fre,color=group,shape=group2,alpha=0.6))+geom_point()+
+  # geom_line(data=max_min_pos,aes(x=position,y=fre,color=group,shape=group2,alpha=0.6))+
+  scale_color_manual(values = c("red","grey","grey","grey","cyan","darkblue","grey","grey","orange"))+
+  theme_bw(base_size = 18)
+#####plot2  max min#####
 
+max_min_phe = shapeindex_phe[c(1,dim(shapeindex_phe)[1]),]
+
+max_min_pos = shapeindex_4[,c("position",max_min_phe$Genotype)]
